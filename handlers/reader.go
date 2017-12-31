@@ -10,17 +10,23 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 
 	"github.com/openfaas/faas/gateway/requests"
 )
 
 // FunctionReader reads functions from Swarm metadata
-func FunctionReader(wildcard bool, c client.ServiceAPIClient) http.HandlerFunc {
+func FunctionReader(wildcard bool, serviceClient client.ServiceAPIClient, nodeClient client.NodeAPIClient) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 
-		functions, err := readServices(c)
+		verbose := false
+		if r.URL != nil {
+			verbose = queryIsNotFalse(r, "v")
+		}
+
+		functions, err := readServices(serviceClient, nodeClient, verbose)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(err.Error()))
@@ -35,7 +41,7 @@ func FunctionReader(wildcard bool, c client.ServiceAPIClient) http.HandlerFunc {
 	}
 }
 
-func readServices(c client.ServiceAPIClient) ([]requests.Function, error) {
+func readServices(serviceClient client.ServiceAPIClient, nodeClient client.NodeAPIClient, verbose bool) ([]requests.Function, error) {
 	functions := []requests.Function{}
 	serviceFilter := filters.NewArgs()
 
@@ -43,11 +49,16 @@ func readServices(c client.ServiceAPIClient) ([]requests.Function, error) {
 		Filters: serviceFilter,
 	}
 
-	services, err := c.ServiceList(context.Background(), options)
+	services, err := serviceClient.ServiceList(context.Background(), options)
 	if err != nil {
 		log.Printf("Error getting service list: %s", err.Error())
 
 		return functions, fmt.Errorf("error getting service list: %s", err.Error())
+	}
+
+	var running map[string]int
+	if verbose {
+		running = getReplicaInfo(serviceClient, nodeClient, services, context.Background())
 	}
 
 	for _, service := range services {
@@ -58,13 +69,19 @@ func readServices(c client.ServiceAPIClient) ([]requests.Function, error) {
 			// Required (copy by value)
 			labels := service.Spec.Annotations.Labels
 
+			var availableReplicas int
+			if _, ok := running[service.ID]; ok {
+				availableReplicas = running[service.ID]
+			}
+
 			f := requests.Function{
-				Name:            service.Spec.Name,
-				Image:           service.Spec.TaskTemplate.ContainerSpec.Image,
-				InvocationCount: 0,
-				Replicas:        *service.Spec.Mode.Replicated.Replicas,
-				EnvProcess:      envProcess,
-				Labels:          &labels,
+				Name:              service.Spec.Name,
+				Image:             service.Spec.TaskTemplate.ContainerSpec.Image,
+				InvocationCount:   0,
+				Replicas:          *service.Spec.Mode.Replicated.Replicas,
+				AvailableReplicas: availableReplicas,
+				EnvProcess:        envProcess,
+				Labels:            &labels,
 			}
 
 			functions = append(functions, f)
@@ -83,4 +100,41 @@ func getEnvProcess(envVars []string) string {
 	}
 
 	return value
+}
+
+func getReplicaInfo(serviceClient client.ServiceAPIClient, nodeClient client.NodeAPIClient, services []swarm.Service, ctx context.Context) map[string]int {
+	// Begin replica info section
+	taskFilter := filters.NewArgs()
+
+	taskFilter.Add("_up-to-date", "true")
+	tasks, err := serviceClient.TaskList(ctx, types.TaskListOptions{Filters: taskFilter})
+	if err != nil {
+		log.Println(err)
+	}
+
+	nodes, err := nodeClient.NodeList(ctx, types.NodeListOptions{})
+	if err != nil {
+		log.Println(err)
+	}
+
+	activeNodes := make(map[string]struct{})
+	for _, n := range nodes {
+		if n.Status.State != swarm.NodeStateDown {
+			activeNodes[n.ID] = struct{}{}
+		}
+	}
+
+	running := map[string]int{}
+	for _, task := range tasks {
+		if _, nodeActive := activeNodes[task.NodeID]; nodeActive && task.Status.State == swarm.TaskStateRunning {
+			running[task.ServiceID]++
+		}
+	}
+
+	return running
+}
+
+func queryIsNotFalse(r *http.Request, k string) bool {
+	s := strings.ToLower(strings.TrimSpace(r.FormValue(k)))
+	return !(s == "" || s == "0" || s == "no" || s == "false" || s == "none")
 }

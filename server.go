@@ -41,11 +41,11 @@ func main() {
 		FunctionProxy:  handlers.FunctionProxy(true, dockerClient),
 		DeleteHandler:  handlers.DeleteHandler(dockerClient),
 		DeployHandler:  handlers.DeployHandler(dockerClient, maxRestarts, restartDelay),
-		FunctionReader: handlers.FunctionReader(true, dockerClient),
-		ReplicaReader:  handlers.ReplicaReader(dockerClient),
+		FunctionReader: handlers.FunctionReader(true, dockerClient, dockerClient),
+		ReplicaReader:  handlers.ReplicaReader(dockerClient, dockerClient),
 		ReplicaUpdater: handlers.ReplicaUpdater(dockerClient),
 		UpdateHandler:  handlers.UpdateHandler(dockerClient, maxRestarts, restartDelay),
-		Health:        handlers.Health(),
+		Health:         handlers.Health(),
 	}
 
 	var port int

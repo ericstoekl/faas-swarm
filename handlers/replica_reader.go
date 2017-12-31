@@ -11,12 +11,17 @@ import (
 )
 
 // ReplicaReader reads replica and image status data from a function
-func ReplicaReader(c *client.Client) http.HandlerFunc {
+func ReplicaReader(serviceClient client.ServiceAPIClient, nodeClient client.NodeAPIClient) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		log.Println("Update replicas")
 
-		functions, err := readServices(c)
+		verbose := false
+		if r.URL != nil {
+			verbose = queryIsNotFalse(r, "v")
+		}
+
+		functions, err := readServices(serviceClient, nodeClient, verbose)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(err.Error()))
